@@ -28,17 +28,11 @@ fn handle_connection(mut stream: TcpStream) -> Result<(), anyhow::Error> {
                 }
 
                 let received = &read_buffer[..received_size];
+                println!("Got: {}", String::from_utf8_lossy(received));
+                let response = "+PONG\r\n";
 
-                match stream.write(received) {
-                    Ok(send_size) => {
-                        if send_size != received_size {
-                            eprintln!("Error sending data");
-                            return Ok(());
-                        }
-                        println!("+PONG\n");
-                    }
-                    Err(_) => todo!(),
-                }
+                stream.write(response.as_bytes())?;
+                stream.flush()?;
             }
             Err(error) => eprintln!("Error reading from stream: {}", error),
         };
