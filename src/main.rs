@@ -1,22 +1,31 @@
 // Uncomment this block to pass the first stage
- use std::net::TcpListener;
+use std::{
+    io::{Error, Write},
+    net::{TcpListener, TcpStream},
+};
+use std::net;
 
-fn main() {
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
+fn main() -> Result<(), Error> {
     println!("Logs from your program will appear here!");
 
-    // Uncomment this block to pass the first stage
+    let listener = TcpListener::bind("127.0.0.1:6379")?;
 
-     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
+    for stream in listener.incoming() {
+        let _ = handle_connection(stream);
+    }
 
-     for stream in listener.incoming() {
-         match stream {
-             Ok(_stream) => {
-                 println!("accepted new connection");
-             }
-             Err(e) => {
-                 println!("error: {}", e);
-             }
-         }
-     }
+    Ok(())
+}
+
+fn handle_connection(stream: Result<TcpStream, Error>) -> Result<(), Error> {
+    match stream {
+        Ok(mut stream) => {
+            println!("accepted new connection");
+            stream.write("+PONG\r\n".as_bytes())?;
+        }
+        Err(e) => {
+            println!("error: {}", e);
+        }
+    }
+    Ok(())
 }
