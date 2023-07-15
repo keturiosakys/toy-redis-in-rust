@@ -35,9 +35,7 @@ fn handle_connection(mut stream: TcpStream) -> Result<(), anyhow::Error> {
                             eprintln!("Error sending data");
                             return Ok(());
                         }
-
-                        println!("Echoed {} bytes", send_size);
-                        println!("Data: {:?}", std::str::from_utf8(received)?);
+                        println!("+PONG\n");
                     }
                     Err(_) => todo!(),
                 }
