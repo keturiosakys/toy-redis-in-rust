@@ -1,9 +1,7 @@
-// Uncomment this block to pass the first stage
 use std::{
-    io::{Error, Write},
+    io::{Error, Read, Write},
     net::{TcpListener, TcpStream},
 };
-use std::net;
 
 fn main() -> Result<(), Error> {
     println!("Logs from your program will appear here!");
@@ -11,21 +9,40 @@ fn main() -> Result<(), Error> {
     let listener = TcpListener::bind("127.0.0.1:6379")?;
 
     for stream in listener.incoming() {
-        let _ = handle_connection(stream);
+        let _ = handle_connection(stream?);
     }
 
     Ok(())
 }
 
-fn handle_connection(stream: Result<TcpStream, Error>) -> Result<(), Error> {
-    match stream {
-        Ok(mut stream) => {
-            println!("accepted new connection");
-            stream.write("+PONG\r\n".as_bytes())?;
-        }
-        Err(e) => {
-            println!("error: {}", e);
-        }
+fn handle_connection(mut stream: TcpStream) -> Result<(), anyhow::Error> {
+    println!("Incoming connection from: {}", stream.peer_addr()?);
+
+    let mut read_buffer = [0; 2048];
+    loop {
+        match stream.read(&mut read_buffer) {
+            Ok(received_size) => {
+                if received_size == 0 {
+                    println!("Connection closed");
+                    return Ok(());
+                }
+
+                let received = &read_buffer[..received_size];
+
+                match stream.write(received) {
+                    Ok(send_size) => {
+                        if send_size != received_size {
+                            eprintln!("Error sending data");
+                            return Ok(());
+                        }
+
+                        println!("Echoed {} bytes", send_size);
+                        println!("Data: {:?}", std::str::from_utf8(received)?);
+                    }
+                    Err(_) => todo!(),
+                }
+            }
+            Err(error) => eprintln!("Error reading from stream: {}", error),
+        };
     }
-    Ok(())
 }
