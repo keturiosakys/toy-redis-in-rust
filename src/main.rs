@@ -1,9 +1,14 @@
-use std::io::Error;
+mod commands;
+mod resp;
+mod utils;
 
+use anyhow::Error;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
+
+use crate::resp::RespToken;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -31,9 +36,12 @@ async fn handle_connection(mut stream: TcpStream) -> Result<(), anyhow::Error> {
 
                 let received = &read_buffer[..received_size];
                 println!("Got: {}", String::from_utf8_lossy(received));
-                let response = "+PONG\r\n";
 
-                stream.write(response.as_bytes()).await?;
+                let parsed = RespToken::deserialize(received)?;
+
+                let response = commands::run_commands(parsed)?;
+
+                stream.write(&response).await?;
                 stream.flush().await?;
             }
             Err(error) => eprintln!("Error reading from stream: {}", error),
