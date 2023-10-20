@@ -10,8 +10,8 @@ pub fn run_commands<'a>(parsed: RespToken) -> Result<Vec<u8>, anyhow::Error> {
         }
 
         match command {
-            RespToken::SimpleString(string) => {
-                let string = string.to_ascii_lowercase();
+            RespToken::SimpleString(command) => {
+                let string = command.to_ascii_lowercase();
 
                 if string == b"ping" {
                     return Ok(b"+PONG\r\n".to_vec());
@@ -32,6 +32,8 @@ pub fn run_commands<'a>(parsed: RespToken) -> Result<Vec<u8>, anyhow::Error> {
                     } else {
                         return Ok(b"-ERR wrong format\r\n".to_vec());
                     }
+                } else if command == b"ping" {
+                    return Ok(b"+PONG\r\n".to_vec());
                 } else {
                     return Ok(b"-ERR unknown command\r\n".to_vec());
                 }
