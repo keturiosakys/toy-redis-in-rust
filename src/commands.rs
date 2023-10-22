@@ -1,6 +1,14 @@
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
+
 use crate::resp::RespToken;
 
-pub fn run_commands<'a>(parsed: RespToken) -> Result<Vec<u8>, anyhow::Error> {
+pub fn evaluate<'a>(
+    parsed: RespToken,
+    cache: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
+) -> Result<Vec<u8>, anyhow::Error> {
     if let RespToken::Array((parsed, _)) = parsed {
         let command = &parsed[0];
         let args = &parsed[1..];
@@ -34,6 +42,29 @@ pub fn run_commands<'a>(parsed: RespToken) -> Result<Vec<u8>, anyhow::Error> {
                     }
                 } else if command == b"ping" {
                     return Ok(b"+PONG\r\n".to_vec());
+                } else if command == b"set" {
+                    let key = args[0].unpack();
+                    let value = args[1].unpack();
+
+                    let mut cache = cache.lock().unwrap();
+                    cache.insert(key.to_vec(), value.to_vec());
+                    return Ok(b"+OK\r\n".to_vec());
+                } else if command == b"get" {
+                    let key = args[0].unpack();
+
+                    let cache = cache.lock().unwrap();
+                    let value = cache.get(key);
+
+                    if let Some(value) = value {
+                        let length = format!("{}", value.len());
+                        let length = length.as_bytes();
+                        let mut response = [&[b'$'], length, &[b'\r', b'\n']].concat();
+                        response = [response, value.to_vec(), b"\r\n".to_vec()].concat();
+
+                        return Ok(response);
+                    } else {
+                        return Ok(b"$-1\r\n".to_vec());
+                    }
                 } else {
                     return Ok(b"-ERR unknown command\r\n".to_vec());
                 }

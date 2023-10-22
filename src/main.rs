@@ -2,6 +2,8 @@ mod commands;
 mod resp;
 mod utils;
 
+use std::{sync::{Arc, Mutex}, collections::HashMap};
+
 use anyhow::Error;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -16,13 +18,16 @@ async fn main() -> Result<(), Error> {
 
     let listener = TcpListener::bind("127.0.0.1:6379").await?;
 
+    let cache = Arc::new(Mutex::new(HashMap::<Vec<u8>, Vec<u8>>::new()));
+
     loop {
         let (stream, _) = listener.accept().await?;
-        tokio::spawn(async move { handle_connection(stream).await });
+        let cache = cache.clone();
+        tokio::spawn(async move { handle_connection(stream, cache).await });
     }
 }
 
-async fn handle_connection(mut stream: TcpStream) -> Result<(), anyhow::Error> {
+async fn handle_connection(mut stream: TcpStream, cache: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>) -> Result<(), anyhow::Error> {
     println!("Incoming connection from: {}", stream.peer_addr()?);
 
     let mut read_buffer = [0; 2048];
@@ -39,7 +44,7 @@ async fn handle_connection(mut stream: TcpStream) -> Result<(), anyhow::Error> {
 
                 let parsed = RespToken::deserialize(received)?;
 
-                let response = commands::run_commands(parsed)?;
+                let response = commands::evaluate(parsed, cache.clone())?;
 
                 stream.write(&response).await?;
                 stream.flush().await?;
