@@ -2,7 +2,10 @@ mod commands;
 mod resp;
 mod utils;
 
-use std::{sync::{Arc, Mutex}, collections::HashMap};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex}, time::{SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::Error;
 use tokio::{
@@ -12,13 +15,15 @@ use tokio::{
 
 use crate::resp::RespToken;
 
+type RedisStore = HashMap<Vec<u8>, (Vec<u8>, u128, u128)>;
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     println!("Logs from your program will appear here!");
 
     let listener = TcpListener::bind("127.0.0.1:6379").await?;
 
-    let cache = Arc::new(Mutex::new(HashMap::<Vec<u8>, Vec<u8>>::new()));
+    let cache = Arc::new(Mutex::new(RedisStore::new()));
 
     loop {
         let (stream, _) = listener.accept().await?;
@@ -27,7 +32,10 @@ async fn main() -> Result<(), Error> {
     }
 }
 
-async fn handle_connection(mut stream: TcpStream, cache: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>) -> Result<(), anyhow::Error> {
+async fn handle_connection(
+    mut stream: TcpStream,
+    cache: Arc<Mutex<RedisStore>>,
+) -> Result<(), anyhow::Error> {
     println!("Incoming connection from: {}", stream.peer_addr()?);
 
     let mut read_buffer = [0; 2048];
