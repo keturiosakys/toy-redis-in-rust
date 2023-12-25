@@ -1,116 +1,90 @@
 use std::{
-    collections::HashMap,
     sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::{resp::RespToken, RedisStore};
+use anyhow::bail;
 
-pub fn evaluate<'a>(
-    parsed: RespToken,
+use crate::{
+    ast::{
+        Command::{Config, Echo, Get, Ping, Set},
+        Pipeline,
+    },
+    models::Config as ServerConfig,
+    resp::RespToken,
+    ExpiringValue, RedisStore,
+};
+
+pub fn eval<'a>(
+    pipeline: Pipeline,
     cache: Arc<Mutex<RedisStore>>,
-) -> Result<Vec<u8>, anyhow::Error> {
-    if let RespToken::Array((parsed, _)) = parsed {
-        let command = &parsed[0];
-        let args = &parsed[1..];
+    config: ServerConfig,
+) -> Result<Vec<Vec<u8>>, anyhow::Error> {
+    pipeline
+        .commands
+        .into_iter()
+        .map(|cmd| match cmd {
+            Ping => return RespToken::serialize(RespToken::SimpleString("PONG".as_bytes())),
+            Echo(msg, len) => return RespToken::serialize(RespToken::BulkString((msg, len))),
+            Set(key, val, duration) => {
+                let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
 
-        if args.len() > 0 {
-            println!("args: {}", &args[0]);
-        }
+                let mut cache = cache.lock().unwrap();
 
-        match command {
-            RespToken::SimpleString(command) => {
-                let string = command.to_ascii_lowercase();
+                cache.insert(
+                    key.to_vec(),
+                    ExpiringValue {
+                        value: val.to_vec(),
+                        ts,
+                        expiry: duration,
+                    },
+                );
+                return RespToken::serialize(RespToken::SimpleString("OK".as_bytes()));
+            }
+            Get(key) => {
+                let cache = cache.lock().unwrap();
 
-                if string == b"ping" {
-                    return Ok(b"+PONG\r\n".to_vec());
+                if let Some(ExpiringValue { value, ts, expiry }) = cache.get(&key) {
+                    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+                    let expiry = expiry.unwrap_or(Duration::from_millis(0));
+                    let lapsed = now.as_millis() - ts.as_millis();
+
+                    if expiry.as_millis() > 0 && lapsed > expiry.as_millis() {
+                        return RespToken::serialize(RespToken::Nil);
+                    }
+
+                    return RespToken::serialize(RespToken::BulkString((value, value.len() as u8)));
                 } else {
-                    return Ok(b"-ERR unknown command\r\n".to_vec());
+                    return RespToken::serialize(RespToken::Nil);
                 }
             }
-            RespToken::BulkString((command, _)) => {
-                let command = command.to_ascii_uppercase();
-
-                match command.as_slice() {
-                    b"PING" => return Ok(b"+PONG\r\n".to_vec()),
-                    b"ECHO" => {
-                        if let RespToken::BulkString((message, length)) = &args[0] {
-                            let length = format!("{}", length);
-                            let length = length.as_bytes();
-                            let mut response = [&[b'$'], length, &[b'\r', b'\n']].concat();
-                            response = [response, message.to_vec(), b"\r\n".to_vec()].concat();
-                            return Ok(response);
-                        } else {
-                            return Ok(b"-ERR wrong format\r\n".to_vec());
-                        }
+            Config(cmd) => match cmd {
+                crate::ast::ConfigCommands::Get(key) => match key.as_slice() {
+                    b"dir" => {
+                        let value = config.dir.as_bytes();
+                        let response = vec![
+                            RespToken::BulkString((&key, key.len() as u8)),
+                            RespToken::BulkString((value, value.len() as u8)),
+                        ];
+                        return RespToken::serialize(RespToken::Array((
+                            response.clone(),
+                            response.len() as u8,
+                        )));
                     }
-                    b"SET" => {
-                        let key = args[0].unpack();
-                        let value = args[1].unpack();
-                        let expiry: Option<u128>;
-
-                        let timestamp = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap()
-                            .as_millis();
-
-                        if let Some(val) = args.get(2) {
-                            let val = val.unpack().to_ascii_uppercase();
-
-                            if val == b"PX" {
-                                let recorded_expiry: u128 = std::str::from_utf8(
-                                    args.get(3).expect("Invalid expiry request").unpack(),
-                                )?
-                                .parse()?;
-
-                                expiry = Some(recorded_expiry);
-                            } else {
-                                return Ok(b"-ERR unrecognized command\r\n".to_vec());
-                            }
-                        } else {
-                            expiry = None;
-                        }
-
-                        let mut cache = cache.lock().unwrap();
-                        cache.insert(
-                            key.to_vec(),
-                            (value.to_vec(), timestamp, expiry.unwrap_or(0)),
-                        );
-                        return Ok(b"+OK\r\n".to_vec());
+                    b"dbfilename" => {
+                        let value = config.db_file_name.as_bytes();
+                        let response = vec![
+                            RespToken::BulkString((&key, key.len() as u8)),
+                            RespToken::BulkString((value, value.len() as u8)),
+                        ];
+                        return RespToken::serialize(RespToken::Array((
+                            response.clone(),
+                            response.len() as u8,
+                        )));
                     }
-                    b"GET" => {
-                        let key = args[0].unpack();
-
-                        let cache = cache.lock().unwrap();
-
-                        if let Some((value, recorded_ts, expiry)) = cache.get(key) {
-                            let now = SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap()
-                                .as_millis();
-
-                            let lapsed = now - recorded_ts;
-
-                            if *expiry > 0 && lapsed > *expiry {
-                                return Ok(b"$-1\r\n".to_vec());
-                            }
-
-                            let length = format!("{}", value.len());
-                            let length = length.as_bytes();
-                            let mut response = [&[b'$'], length, &[b'\r', b'\n']].concat();
-                            response = [response, value.to_vec(), b"\r\n".to_vec()].concat();
-
-                            return Ok(response);
-                        } else {
-                            return Ok(b"$-1\r\n".to_vec());
-                        }
-                    }
-                    _ => return Ok(b"-ERR unknown command\r\n".to_vec()),
-                }
-            }
-            _ => todo!(),
-        }
-    } else {
-        todo!()
-    }
+                    _ => bail!("Unrecognized config key"),
+                },
+            },
+        })
+        .collect()
 }

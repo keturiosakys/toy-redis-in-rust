@@ -1,24 +1,29 @@
-use core::fmt;
-
-use anyhow::{anyhow, Error};
+use anyhow::{bail, Error};
 
 pub const CR: u8 = b'\r';
 pub const LF: u8 = b'\n';
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum RespToken<'a> {
-    Error(&'a [u8]),
-    Integer(&'a [u8]),
+    Nil,
+    #[allow(dead_code)]
+    Error(RespError),
     SimpleString(&'a [u8]),
     BulkString((&'a [u8], u8)),
     Array((Vec<RespToken<'a>>, u8)),
 }
 
+#[derive(Debug, Clone)]
+pub enum RespError {
+    #[allow(dead_code)]
+    InvalidCommand,
+    #[allow(dead_code)]
+    InvalidFormat,
+}
+
 impl<'a> RespToken<'a> {
     pub fn unpack(&self) -> &[u8] {
         match *self {
-            RespToken::Error(val) => val,
-            RespToken::Integer(val) => val,
             RespToken::SimpleString(val) => val,
             RespToken::BulkString((val, _)) => val,
             _ => panic!("Can't unpack array"), // TODO: probably not a good interface
@@ -28,27 +33,38 @@ impl<'a> RespToken<'a> {
     pub fn deserialize(input: &'a [u8]) -> Result<Self, anyhow::Error> {
         let (res, rem) = parse_input(input)?;
         if rem.len() > 0 {
-            return Err(anyhow!("Invalid input: {}", String::from_utf8_lossy(rem)));
+            bail!("Invalid input: {}", String::from_utf8_lossy(rem))
         }
         Ok(res)
     }
-}
 
-impl fmt::Display for RespToken<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RespToken::Error(val) => write!(f, "-{}", String::from_utf8_lossy(val)),
-            RespToken::Integer(val) => write!(f, ":{}", String::from_utf8_lossy(val)),
-            RespToken::SimpleString(val) => write!(f, "+{}", String::from_utf8_lossy(val)),
-            RespToken::BulkString((val, len)) => {
-                write!(f, "${}{}", len, String::from_utf8_lossy(val))
+    pub fn serialize(token: RespToken) -> Result<Vec<u8>, anyhow::Error> {
+        match token {
+            RespToken::Nil => return Ok(b"$-1\r\n".to_vec()),
+            RespToken::Error(err) => match err {
+                RespError::InvalidCommand => return Ok(b"-ERR unknown command\r\n".to_vec()),
+                RespError::InvalidFormat => return Ok(b"-ERR unknown format\r\n".to_vec()),
+            },
+            RespToken::SimpleString(str) => {
+                let msg = [[b'+'].to_vec(), str.to_vec(), b"\r\n".to_vec()].concat();
+                return Ok(msg);
             }
-            RespToken::Array((val, _)) => {
-                let mut res = String::new();
-                for el in val {
-                    res.push_str(&format!("{}\r\n", el));
+            RespToken::BulkString((bulk, len)) => {
+                let len = format!("{}", len);
+                let len = len.as_bytes();
+                let mut res = [[b'$'].to_vec(), len.to_vec(), b"\r\n".to_vec()].concat();
+                res = [res, bulk.to_vec(), b"\r\n".to_vec()].concat();
+                return Ok(res);
+            }
+            RespToken::Array((arr, len)) => {
+                let mut res = Vec::with_capacity(len.into());
+
+                for token in arr {
+                    let serialized = RespToken::serialize(token)?;
+                    res.extend(serialized);
                 }
-                write!(f, "*{}", res)
+
+                return Ok(res);
             }
         }
     }
@@ -59,8 +75,7 @@ pub fn parse_input(input: &[u8]) -> Result<(RespToken, &[u8]), anyhow::Error> {
         b'+' => parse_simple_string(&input[1..]),
         b'$' => parse_bulk_string(&input[1..]),
         b'*' => parse_array(&input[1..]),
-        b':' => parse_integer(&input[1..]),
-        byte => panic!(
+        byte => bail!(
             "Invalid type specifier {}, must be valid RESP protocol",
             byte as char
         ),
@@ -71,12 +86,12 @@ pub fn parse_until_eol(input: &[u8]) -> Result<(&[u8], &[u8]), Error> {
     for (idx, el) in input.iter().enumerate() {
         if el == &CR {
             if input[idx + 1] != LF {
-                return Err(anyhow!("Invalid EOL format"));
+                bail!("Invalid EOL format")
             }
             return Ok((&input[..idx], &input[idx + 2..]));
         }
     }
-    Err(anyhow!("not enough bytes"))
+    bail!("not enough bytes")
 }
 
 pub fn parse_array(input: &[u8]) -> Result<(RespToken, &[u8]), Error> {
@@ -97,7 +112,7 @@ pub fn parse_array(input: &[u8]) -> Result<(RespToken, &[u8]), Error> {
 
 pub fn parse_simple_string<'a>(input: &'a [u8]) -> Result<(RespToken<'a>, &[u8]), Error> {
     if input.len() < 2 {
-        return Err(anyhow!("Invalid simple string format"));
+        bail!("Invalid simple string format")
     }
 
     let (data, rest) = parse_until_eol(input)?;
@@ -106,7 +121,7 @@ pub fn parse_simple_string<'a>(input: &'a [u8]) -> Result<(RespToken<'a>, &[u8])
 
 pub fn parse_bulk_string(input: &[u8]) -> Result<(RespToken, &[u8]), Error> {
     if input.len() < 2 {
-        return Err(anyhow!("Invalid bulk string format"));
+        bail!("Invalid bulk string format")
     }
 
     let (size, rest) = parse_until_eol(input)?;
@@ -114,19 +129,4 @@ pub fn parse_bulk_string(input: &[u8]) -> Result<(RespToken, &[u8]), Error> {
     let size: usize = std::str::from_utf8(size)?.parse()?;
 
     return Ok((RespToken::BulkString((bulk, size as u8)), rest));
-}
-
-pub fn parse_integer(input: &[u8]) -> Result<(RespToken, &[u8]), Error> {
-    if input.len() < 2 {
-        return Err(anyhow!("Invalid integer format"));
-    }
-
-    let (integer, rest) = parse_until_eol(input)?;
-
-    //INFO: for now we don't care about the integer value, just storing the raw bytes
-    return Ok((RespToken::Integer(integer), rest));
-}
-
-pub fn parse_error(input: &[u8]) -> Result<(RespToken, &[u8]), Error> {
-    todo!()
 }
